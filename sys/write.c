@@ -213,6 +213,8 @@ DokanDispatchWrite(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     RtlCopyMemory(eventContext->Operation.Write.FileName, fcb->FileName.Buffer,
                   fcb->FileName.Length);
 
+    DokanFCBUnlock(fcb);
+
     // When eventlength is less than event notification buffer,
     // returns it to user-mode using pending event.
     if (eventLength <= EVENT_CONTEXT_MAX_SIZE) {
@@ -310,8 +312,6 @@ DokanDispatchWrite(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     }
 
   } __finally {
-    if(fcbLocked)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, 0);
 
