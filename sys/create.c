@@ -731,12 +731,13 @@ Return Value:
       status = STATUS_INSUFFICIENT_RESOURCES;
       __leave;
     }
-    DokanFCBLockRW(fcb);
 
     if (fcb->FileCount > 1 && disposition == FILE_CREATE) {
       status = STATUS_OBJECT_NAME_COLLISION;
       __leave;
     }
+
+    DokanFCBLockRW(fcb);
 
     if (irpSp->Flags & SL_OPEN_PAGING_FILE) {
       fcb->AdvancedFCBHeader.Flags2 |= FSRTL_FLAG2_IS_PAGING_FILE;
@@ -747,6 +748,7 @@ Return Value:
     if (ccb == NULL) {
       DDbgPrint("    Was not able to allocate CCB\n");
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -833,6 +835,7 @@ Return Value:
     if (eventContext == NULL) {
       DDbgPrint("    Was not able to allocate eventContext\n");
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -985,6 +988,8 @@ Return Value:
               eventContext->Operation.Create.FileNameOffset +
               (parentDir ? fileNameLength : fcb->FileName.Length)) = 0;
 
+    DokanFCBUnlock(fcb);
+
 //
 // Oplock
 //
@@ -1036,13 +1041,10 @@ Return Value:
             !FlagOn(irpSp->Parameters.Create.Options,
                     FILE_COMPLETE_IF_OPLOCKED)) {
 
-          POPLOCK oplock = DokanGetFcbOplock(fcb);
-          DokanFCBUnlock(fcb);
           OplockBreakStatus = FsRtlOplockBreakH(
-              oplock, Irp, 0, eventContext,
+              DokanGetFcbOplock(fcb), Irp, 0, eventContext,
               NULL /* DokanOplockComplete */, // block instead of callback
               DokanPrePostIrp);
-          DokanFCBLockRW(fcb);
 
           //
           //  If FsRtlOplockBreakH returned STATUS_PENDING,
@@ -1125,13 +1127,17 @@ Return Value:
         return status;
 #endif
       }
+      DokanFCBLockRW(fcb);
       IoUpdateShareAccess(fileObject, &fcb->ShareAccess);
+      DokanFCBUnlock(fcb);
 
     } else {
+      DokanFCBLockRW(fcb);
       IoSetShareAccess(
           eventContext->Operation.Create.SecurityContext.DesiredAccess,
           eventContext->Operation.Create.ShareAccess, fileObject,
           &fcb->ShareAccess);
+      DokanFCBUnlock(fcb);
     }
 
     UnwindShareAccess = TRUE;
@@ -1155,9 +1161,11 @@ Return Value:
       //  to service an oplock break and we need to leave now.
       //
       if (status == STATUS_PENDING) {
+        DokanFCBLockRO(fcb);
         DDbgPrint("   FsRtlCheckOplock returned STATUS_PENDING, fileName = "
                   "%wZ, fileCount = %lu\n",
                   fcb->FileName, fcb->FileCount);
+        DokanFCBUnlock(fcb);
         __leave;
       }
     }
@@ -1194,9 +1202,12 @@ Return Value:
       //
       if ((status != STATUS_SUCCESS) &&
           (status != STATUS_OPLOCK_BREAK_IN_PROGRESS)) {
+
+        DokanFCBLockRO(fcb);
         DDbgPrint("   FsRtlOplockFsctrl failed with 0x%x, fileName = %wZ, "
                   "fileCount = %lu\n",
                   status, fcb->FileName, fcb->FileCount);
+        DokanFCBUnlock(fcb);
 
         __leave;
       } else if (status == STATUS_OPLOCK_BREAK_IN_PROGRESS) {
@@ -1239,12 +1250,12 @@ Return Value:
       }
 
       if (UnwindShareAccess) {
+        DokanFCBLockRW(fcb);
         IoRemoveShareAccess(fileObject, &fcb->ShareAccess);
+        DokanFCBUnlock(fcb);
       }
     }
 #endif
-    if (fcb)
-      DokanFCBUnlock(fcb);
 
     if (relatedFileName) {
       ExFreePool(relatedFileName->Buffer);
@@ -1299,9 +1310,10 @@ VOID DokanCompleteCreate(__in PIRP_ENTRY IrpEntry,
 
   fcb = ccb->Fcb;
   ASSERT(fcb != NULL);
-  DokanFCBLockRW(fcb);
 
+  DokanFCBLockRO(fcb);
   DDbgPrint("  FileName:%wZ\n", &fcb->FileName);
+  DokanFCBUnlock(fcb);
 
   ccb->UserContext = EventInfo->Context;
   // DDbgPrint("   set Context %X\n", (ULONG)ccb->UserContext);
@@ -1378,15 +1390,13 @@ VOID DokanCompleteCreate(__in PIRP_ENTRY IrpEntry,
     DDbgPrint("   IRP_MJ_CREATE failed. Free CCB:%p. Status 0x%x\n", ccb,
               status);
     DokanFreeCCB(ccb);
+    DokanFCBLockRW(fcb);
     IoRemoveShareAccess(irpSp->FileObject, &fcb->ShareAccess);
     DokanFCBUnlock(fcb);
     DokanFreeFCB(fcb);
     fcb = NULL;
     IrpEntry->FileObject->FsContext2 = NULL;
   }
-
-  if (fcb)
-    DokanFCBUnlock(fcb);
 
   DokanCompleteIrpRequest(irp, status, info);
 
