@@ -185,6 +185,7 @@ Return Value:
     eventContext = AllocateEventContext(vcb->Dcb, Irp, eventLength, ccb);
     if (eventContext == NULL) {
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -216,6 +217,8 @@ Return Value:
     eventContext->Operation.Read.FileNameLength = fcb->FileName.Length;
     RtlCopyMemory(eventContext->Operation.Read.FileName, fcb->FileName.Buffer,
                   fcb->FileName.Length);
+
+    DokanFCBUnlock(fcb);
 
     //
     //  We now check whether we can proceed based on the state of
@@ -251,8 +254,6 @@ Return Value:
     // register this IRP to pending IPR list and make it pending status
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, 0);
   } __finally {
-    if(fcbLocked)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, readLength);
 
