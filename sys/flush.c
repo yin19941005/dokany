@@ -76,6 +76,8 @@ DokanDispatchFlush(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     RtlCopyMemory(eventContext->Operation.Flush.FileName, fcb->FileName.Buffer,
                   fcb->FileName.Length);
 
+    DokanFCBUnlock(fcb);
+
     CcUninitializeCacheMap(fileObject, NULL, NULL);
     // fileObject->Flags &= FO_CLEANUP_COMPLETE;
 
@@ -99,8 +101,6 @@ DokanDispatchFlush(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, 0);
 
   } __finally {
-    if(fcb)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, 0);
 
