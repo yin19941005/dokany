@@ -1378,6 +1378,7 @@ VOID DokanCompleteCreate(__in PIRP_ENTRY IrpEntry,
 
   if (NT_SUCCESS(status)) {
     if (info == FILE_CREATED) {
+      DokanFCBLockRO(fcb);
       if (DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY)) {
         DokanNotifyReportChange(fcb, FILE_NOTIFY_CHANGE_DIR_NAME,
                                 FILE_ACTION_ADDED);
@@ -1385,6 +1386,7 @@ VOID DokanCompleteCreate(__in PIRP_ENTRY IrpEntry,
         DokanNotifyReportChange(fcb, FILE_NOTIFY_CHANGE_FILE_NAME,
                                 FILE_ACTION_ADDED);
       }
+      DokanFCBUnlock(fcb);
     }
   } else {
     DDbgPrint("   IRP_MJ_CREATE failed. Free CCB:%p. Status 0x%x\n", ccb,

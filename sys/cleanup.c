@@ -115,9 +115,10 @@ Return Value:
     RtlCopyMemory(eventContext->Operation.Cleanup.FileName,
                   fcb->FileName.Buffer, fcb->FileName.Length);
 
+    DokanFCBUnlock(fcb);
+
     status = FsRtlCheckOplock(DokanGetFcbOplock(fcb), Irp, eventContext,
                               DokanOplockComplete, DokanPrePostIrp);
-    DokanFCBUnlock(fcb);
 
     //
     //  if FsRtlCheckOplock returns STATUS_PENDING the IRP has been posted
@@ -171,13 +172,13 @@ VOID DokanCompleteCleanup(__in PIRP_ENTRY IrpEntry,
 
   fcb = ccb->Fcb;
   ASSERT(fcb != NULL);
-  DokanFCBLockRW(fcb);
 
   vcb = fcb->Vcb;
 
   status = EventInfo->Status;
 
   if (DokanFCBFlagsIsSet(fcb, DOKAN_DELETE_ON_CLOSE)) {
+    DokanFCBLockRO(fcb);
     if (DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY)) {
       DokanNotifyReportChange(fcb, FILE_NOTIFY_CHANGE_DIR_NAME,
                               FILE_ACTION_REMOVED);
@@ -185,6 +186,7 @@ VOID DokanCompleteCleanup(__in PIRP_ENTRY IrpEntry,
       DokanNotifyReportChange(fcb, FILE_NOTIFY_CHANGE_FILE_NAME,
                               FILE_ACTION_REMOVED);
     }
+    DokanFCBUnlock(fcb);
   }
 
   //
@@ -197,6 +199,7 @@ VOID DokanCompleteCleanup(__in PIRP_ENTRY IrpEntry,
     FsRtlNotifyCleanup(vcb->NotifySync, &vcb->DirNotifyList, ccb);
   }
 
+  DokanFCBLockRW(fcb);
   IoRemoveShareAccess(irpSp->FileObject, &fcb->ShareAccess);
   DokanFCBUnlock(fcb);
 
