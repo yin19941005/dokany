@@ -98,6 +98,7 @@ DokanDispatchQuerySecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     if (eventContext == NULL) {
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -108,6 +109,7 @@ DokanDispatchQuerySecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
         status = DokanAllocateMdl(Irp, bufferLength);
         if (!NT_SUCCESS(status)) {
           DokanFreeEventContext(eventContext);
+          DokanFCBUnlock(fcb);
           __leave;
         }
         flags = DOKAN_MDL_ALLOCATED;
@@ -121,12 +123,11 @@ DokanDispatchQuerySecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     eventContext->Operation.Security.FileNameLength = fcb->FileName.Length;
     RtlCopyMemory(eventContext->Operation.Security.FileName,
                   fcb->FileName.Buffer, fcb->FileName.Length);
+    DokanFCBUnlock(fcb);
 
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, flags);
 
   } __finally {
-    if(fcb)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, info);
 
@@ -161,9 +162,8 @@ VOID DokanCompleteQuerySecurity(__in PIRP_ENTRY IrpEntry,
   if (EventInfo->Status == STATUS_SUCCESS &&
       EventInfo->BufferLength <= bufferLength && buffer != NULL) {
     if (!RtlValidRelativeSecurityDescriptor(
-           EventInfo->Buffer, 
-           EventInfo->BufferLength, 
-           irpSp->Parameters.QuerySecurity.SecurityInformation)) {
+            EventInfo->Buffer, EventInfo->BufferLength,
+            irpSp->Parameters.QuerySecurity.SecurityInformation)) {
       // No valid security descriptor to return.
       info = 0;
       status = STATUS_INVALID_PARAMETER;
@@ -286,6 +286,7 @@ DokanDispatchSetSecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
       DDbgPrint("    SecurityDescriptor is too big: %d (limit %d)\n",
                 eventLength, EVENT_CONTEXT_MAX_SIZE);
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -293,6 +294,7 @@ DokanDispatchSetSecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     if (eventContext == NULL) {
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
     eventContext->Context = ccb->UserContext;
@@ -308,12 +310,11 @@ DokanDispatchSetSecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     eventContext->Operation.SetSecurity.FileNameLength = fcb->FileName.Length;
     RtlCopyMemory(eventContext->Operation.SetSecurity.FileName,
                   fcb->FileName.Buffer, fcb->FileName.Length);
+    DokanFCBUnlock(fcb);
 
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, 0);
 
   } __finally {
-    if(fcb)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, info);
 
