@@ -195,6 +195,7 @@ VOID DokanCompleteCleanup(__in PIRP_ENTRY IrpEntry,
   (VOID) FsRtlFastUnlockAll(&fcb->FileLock, fileObject,
                             IoGetRequestorProcess(irp), NULL);
 
+
   if (DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY)) {
     FsRtlNotifyCleanup(vcb->NotifySync, &vcb->DirNotifyList, ccb);
   }

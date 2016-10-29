@@ -72,7 +72,6 @@ DokanDispatchQueryInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     fcb = ccb->Fcb;
     ASSERT(fcb != NULL);
-    DokanFCBLockRO(fcb);
 
     switch (irpSp->Parameters.QueryFile.FileInformationClass) {
     case FileBasicInformation:
@@ -108,6 +107,7 @@ DokanDispatchQueryInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
       DDbgPrint("  FileNameInformation\n");
 
+      DokanFCBLockRO(fcb);
       if (irpSp->Parameters.QueryFile.Length <
           sizeof(FILE_NAME_INFORMATION) + fcb->FileName.Length) {
 
@@ -126,6 +126,7 @@ DokanDispatchQueryInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
                fcb->FileName.Length;
         status = STATUS_SUCCESS;
       }
+      DokanFCBUnlock(fcb);
       __leave;
     } break;
     case FileNetworkOpenInformation:
@@ -180,12 +181,14 @@ DokanDispatchQueryInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     // calculate the length of EVENT_CONTEXT
     // sum of it's size and file name length
+    DokanFCBLockRO(fcb);
     eventLength = sizeof(EVENT_CONTEXT) + fcb->FileName.Length;
 
     eventContext = AllocateEventContext(vcb->Dcb, Irp, eventLength, ccb);
 
     if (eventContext == NULL) {
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -203,13 +206,12 @@ DokanDispatchQueryInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     eventContext->Operation.File.FileNameLength = fcb->FileName.Length;
     RtlCopyMemory(eventContext->Operation.File.FileName, fcb->FileName.Buffer,
                   fcb->FileName.Length);
+    DokanFCBUnlock(fcb);
 
     // register this IRP to pending IPR list
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, 0);
 
   } __finally {
-    if(fcb)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, info);
 
@@ -351,11 +353,14 @@ DokanDispatchSetInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
         pInfoEoF = (PFILE_END_OF_FILE_INFORMATION)buffer;
 
+        DokanFCBLockRW(fcb);
         if (!MmCanFileBeTruncated(fileObject->SectionObjectPointer,
                                   &pInfoEoF->EndOfFile)) {
           status = STATUS_USER_MAPPED_FILE;
+          DokanFCBUnlock(fcb);
           __leave;
         }
+        DokanFCBUnlock(fcb);
 
         if (!isPagingIo) {
           ExAcquireResourceExclusiveLite(&fcb->PagingIoResource, TRUE);
@@ -402,7 +407,7 @@ DokanDispatchSetInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     // calcurate the size of EVENT_CONTEXT
     // it is sum of file name length and size of FileInformation
-    DokanFCBLockRW(fcb);
+    DokanFCBLockRO(fcb);
     fcbLocked = TRUE;
     eventLength = sizeof(EVENT_CONTEXT) + fcb->FileName.Length +
                   irpSp->Parameters.SetFile.Length;
@@ -418,6 +423,7 @@ DokanDispatchSetInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     if (eventContext == NULL) {
       status = STATUS_INSUFFICIENT_RESOURCES;
+      DokanFCBUnlock(fcb);
       __leave;
     }
 
@@ -490,6 +496,8 @@ DokanDispatchSetInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     RtlCopyMemory(eventContext->Operation.SetFile.FileName,
                   fcb->FileName.Buffer, fcb->FileName.Length);
 
+    DokanFCBUnlock(fcb);
+
     status = FsRtlCheckOplock(DokanGetFcbOplock(fcb), Irp, eventContext,
                               DokanOplockComplete, DokanPrePostIrp);
 
@@ -510,8 +518,6 @@ DokanDispatchSetInformation(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     status = DokanRegisterPendingIrp(DeviceObject, Irp, eventContext, 0);
 
   } __finally {
-    if(fcbLocked)
-      DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(Irp, status, 0);
 
@@ -614,7 +620,6 @@ VOID DokanCompleteSetInformation(__in PIRP_ENTRY IrpEntry,
 
         fcb->FileName.Length = (USHORT)EventInfo->BufferLength;
         fcb->FileName.MaximumLength = (USHORT)EventInfo->BufferLength;
-
       }
     }
 
@@ -681,7 +686,7 @@ VOID DokanCompleteSetInformation(__in PIRP_ENTRY IrpEntry,
     }
 
   } __finally {
-    if(fcb)
+    if (fcb)
       DokanFCBUnlock(fcb);
 
     DokanCompleteIrpRequest(irp, status, info);
