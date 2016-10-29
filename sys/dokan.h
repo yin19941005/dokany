@@ -332,7 +332,8 @@ typedef struct _DokanFileControlBlock {
   // Locking: DokanFCBLock{RO,RW}
   LIST_ENTRY NextCCB;
 
-  // Locking: DokanFCBLock{RO,RW}
+  // Locking: Simple reads and writes to properly-aligned
+  // 32-bit variables are atomic operations.
   LONG FileCount;
 
   // Locking: Use atomic flag operations - DokanFCBFlags*
@@ -351,7 +352,6 @@ typedef struct _DokanFileControlBlock {
   //  The following field is used by the oplock module
   //  to maintain current oplock information.
   //
-  // Locking: DokanFCBLock{RO,RW}
   OPLOCK Oplock;
 #endif
 

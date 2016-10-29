@@ -173,9 +173,10 @@ DokanDispatchLock(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
 
     fcb = ccb->Fcb;
     ASSERT(fcb != NULL);
-    DokanFCBLockRW(fcb);
 
     if (dcb->FileLockInUserMode) {
+
+      DokanFCBLockRO(fcb);
 
       eventLength = sizeof(EVENT_CONTEXT) + fcb->FileName.Length;
       eventContext = AllocateEventContext(vcb->Dcb, Irp, eventLength, ccb);
@@ -192,6 +193,8 @@ DokanDispatchLock(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
       eventContext->Operation.Lock.FileNameLength = fcb->FileName.Length;
       RtlCopyMemory(eventContext->Operation.Lock.FileName, fcb->FileName.Buffer,
                     fcb->FileName.Length);
+
+      DokanFCBUnlock(fcb);
 
       // parameters of Lock
       eventContext->Operation.Lock.ByteOffset =
@@ -212,8 +215,6 @@ DokanDispatchLock(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
     }
 
   } __finally {
-    if(fcb)
-      DokanFCBUnlock(fcb);
 
     if (completeIrp) {
       DokanCompleteIrpRequest(Irp, status, 0);
