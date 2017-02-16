@@ -38,6 +38,13 @@ VOID SendWriteRequest(HANDLE Handle, PEVENT_INFORMATION EventInfo,
                            NULL             // synchronous call
                            );
 
+  DbgPrint("SendWriteRequest : status = %d, EventLength = %lu, BufferLength = %lu, returnedLength = %lu \n", status, EventLength, BufferLength, returnedLength);
+
+  if (returnedLength == 0) {
+	  DWORD errorCode = GetLastError();
+	  DbgPrint("returnedLength == 0, After SendWriteRequest LastError : %lu \n", errorCode);
+  }
+
   if (!status) {
     DWORD errorCode = GetLastError();
     DbgPrint("Ioctl failed with code %d\n", errorCode);
@@ -79,11 +86,13 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
   DbgPrint("###WriteFile %04d\n", openInfo != NULL ? openInfo->EventId : -1);
 
   if (DokanInstance->DokanOperations->WriteFile) {
+    DbgPrint("\tWriteFile : Just Before Call to DokanInstance->DokanOperations->WriteFile Function. \n");
     status = DokanInstance->DokanOperations->WriteFile(
         EventContext->Operation.Write.FileName,
         (PCHAR)EventContext + EventContext->Operation.Write.BufferOffset,
         EventContext->Operation.Write.BufferLength, &writtenLength,
         EventContext->Operation.Write.ByteOffset.QuadPart, &fileInfo);
+	DbgPrint("\tWriteFile : Just After Call to DokanInstance->DokanOperations->WriteFile Function. \n");
   } else {
     status = STATUS_NOT_IMPLEMENTED;
   }
@@ -97,11 +106,24 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
     eventInfo->BufferLength = writtenLength;
     eventInfo->Operation.Write.CurrentByteOffset.QuadPart =
         EventContext->Operation.Write.ByteOffset.QuadPart + writtenLength;
+	DbgPrint("\tWriteFile : eventInfo->BufferLength = %lu \n", eventInfo->BufferLength);
+	DbgPrint("\tWriteFile : eventInfo->Operation.Write.CurrentByteOffset.QuadPart = %I64d \n", eventInfo->Operation.Write.CurrentByteOffset.QuadPart);
   }
-
+  
+  DbgPrint("\tWriteFile : Just Before Calling SendEventInformation. \n");
   SendEventInformation(Handle, eventInfo, sizeOfEventInfo, DokanInstance);
-  free(eventInfo);
+  DbgPrint("\tWriteFile : Just After Calling SendEventInformation. \n");
 
-  if (bufferAllocated)
-    free(EventContext);
+  free(eventInfo);
+  DbgPrint("\tWriteFile : Just After Calling free(eventInfo). \n");
+
+  if (bufferAllocated) {
+	  DbgPrint("\tWriteFile : Just Before Calling free(EventContext).. \n");
+	  free(EventContext);
+	  DbgPrint("\tWriteFile : Just After Calling free(EventContext). \n");
+  }
+  else {
+	  DbgPrint("\tWriteFile : bufferAllocated is FALSE. \n");
+  }
+    
 }
