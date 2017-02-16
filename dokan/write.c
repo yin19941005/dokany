@@ -75,10 +75,21 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
       free(eventInfo);
       return;
     }
-    SendWriteRequest(Handle, eventInfo, sizeOfEventInfo, contextBuf,
+    
+	DbgPrint("\tWriteFile : Before call SendWriteRequest, contextLength = %lu (contextLength = EventContext->Operation.Write.RequestLength)\n", contextLength);
+
+	SendWriteRequest(Handle, eventInfo, sizeOfEventInfo, contextBuf,
                      contextLength);
     EventContext = contextBuf;
     bufferAllocated = TRUE;
+  }
+
+  if (EventContext == NULL) {
+	  DbgPrint("\tWriteFile : EventContext == NULL (After EventContext = contextBuf). \n");
+  }
+  else {
+	  DbgPrint("\tWriteFile : EventContext->SerialNumber = %lu \n", EventContext->SerialNumber);
+	  DbgPrint("\tWriteFile : EventContext->Operation.Write.RequestLength = %lu \n", EventContext->Operation.Write.RequestLength);
   }
 
   CheckFileName(EventContext->Operation.Write.FileName);
