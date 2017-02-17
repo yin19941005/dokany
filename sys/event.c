@@ -826,26 +826,7 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
 
   KeReleaseSpinLock(&vcb->Dcb->PendingIrp.ListLock, oldIrql);
 
-  if (isFoundCorrespondingIrp) {
-	  DDbgPrint("  EventWrite : Success found corresponding IRP (irpEntry->SerialNumber == eventInfo->SerialNumber).");
-  }
-  else {
-	  DDbgPrint("  EventWrite : Cannot found corresponding IRP (irpEntry->SerialNumber != eventInfo->SerialNumber).");
-  }
-
-  if (isWriteIrpNull) {
-	  DDbgPrint("  EventWrite : WriteIrp is Null!! (writeIrp = irpEntry->Irp)");
-  }
-  else {
-	  DDbgPrint("  EventWrite : WriteIrp is not Null. (writeIrp = irpEntry->Irp)");
-  }
-
-  if (isIoSetCancelRoutineReturnNull) {
-	  DDbgPrint("  EventWrite : IoSetCancelRoutine return Null!!");
-  }
-  else {
-	  DDbgPrint("  EventWrite : IoSetCancelRoutine return not Null.");
-  }
+  DDbgPrint("  EventWrite : Cannot found corresponding IRP. This should never happen!!");
 
   return STATUS_SUCCESS;
 }
