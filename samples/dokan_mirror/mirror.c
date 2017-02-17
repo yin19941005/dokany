@@ -506,10 +506,12 @@ static NTSTATUS DOKAN_CALLBACK MirrorWriteFile(LPCWSTR FileName, LPCVOID Buffer,
                                                LPDWORD NumberOfBytesWritten,
                                                LONGLONG Offset,
                                                PDOKAN_FILE_INFO DokanFileInfo) {
+  DbgPrint(L"MirrorWriteFile : First Line execute!! \n");
   WCHAR filePath[MAX_PATH];
   HANDLE handle = (HANDLE)DokanFileInfo->Context;
   BOOL opened = FALSE;
 
+  DbgPrint(L"MirrorWriteFile : Before call GetFilePath.\n");
   GetFilePath(filePath, MAX_PATH, FileName);
 
   DbgPrint(L"WriteFile : %s, offset %I64d, length %d\n", filePath, Offset,

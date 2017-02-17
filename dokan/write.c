@@ -90,6 +90,8 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
   else {
 	  DbgPrint("\tWriteFile : EventContext->SerialNumber = %lu \n", EventContext->SerialNumber);
 	  DbgPrint("\tWriteFile : EventContext->Operation.Write.RequestLength = %lu \n", EventContext->Operation.Write.RequestLength);
+	  DbgPrint("\tWriteFile : EventContext = %lu \n", EventContext);
+	  DbgPrint("\tWriteFile : EventContext + EventContext->Operation.Write.BufferOffset = %I64d \n", (PCHAR)EventContext + EventContext->Operation.Write.BufferOffset);
   }
 
   CheckFileName(EventContext->Operation.Write.FileName);
