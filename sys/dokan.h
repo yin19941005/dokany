@@ -101,10 +101,17 @@ extern LOOKASIDE_LIST_EX g_DokanEResourceLookasideList;
 #if _WIN32_WINNT > 0x501
 
 #define DDbgPrint(...)                                                         \
+  if (FALSE) {                                                               \
+    KdPrintEx(                                                                 \
+        (DPFLTR_IHVDRIVER_ID, DPFLTR_TRACE_LEVEL, "[DokanFS] " __VA_ARGS__));  \
+  }
+
+#define DDbgPrint2(...)                                                         \
   if (g_Debug) {                                                               \
     KdPrintEx(                                                                 \
         (DPFLTR_IHVDRIVER_ID, DPFLTR_TRACE_LEVEL, "[DokanFS] " __VA_ARGS__));  \
   }
+
 #else
 #define DDbgPrint(...)                                                         \
   if (g_Debug) {                                                               \
