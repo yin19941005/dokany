@@ -677,9 +677,6 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
   PDokanVCB vcb;
   PEVENT_INFORMATION eventInfo;
   PIRP writeIrp;
-  BOOLEAN isFoundCorrespondingIrp = FALSE;
-  BOOLEAN isWriteIrpNull = FALSE;
-  BOOLEAN isIoSetCancelRoutineReturnNull = FALSE;
 
   eventInfo = (PEVENT_INFORMATION)Irp->AssociatedIrp.SystemBuffer;
   ASSERT(eventInfo != NULL);
@@ -690,8 +687,6 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
   vcb = DeviceObject->DeviceExtension;
 
   if (GetIdentifierType(vcb) != VCB) {
-	  DDbgPrint("  EventWrite : return STATUS_INVALID_PARAMETER \n");
-	  DDbgPrint2("  EventWrite : return STATUS_INVALID_PARAMETER \n");
     return STATUS_INVALID_PARAMETER;
   }
 
@@ -714,18 +709,11 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
 
     // check whehter this is corresponding IRP
 
-    DDbgPrint("SerialNumber irpEntry %X eventInfo %X\n",
-    irpEntry->SerialNumber, eventInfo->SerialNumber);
-	DDbgPrint2("SerialNumber irpEntry %X eventInfo %X\n",
-		irpEntry->SerialNumber, eventInfo->SerialNumber);
+    // DDbgPrint("SerialNumber irpEntry %X eventInfo %X\n",
+    // irpEntry->SerialNumber, eventInfo->SerialNumber);
 
     if (irpEntry->SerialNumber != eventInfo->SerialNumber) {
       continue;
-	}
-	else {
-		isFoundCorrespondingIrp = TRUE;
-		DDbgPrint("  EventWrite : irpEntry->SerialNumber == eventInfo->SerialNumber.");
-		DDbgPrint2("  EventWrite : irpEntry->SerialNumber == eventInfo->SerialNumber.");
 	}
 
     // do NOT free irpEntry here
@@ -734,11 +722,6 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
       // this IRP has already been canceled
       ASSERT(irpEntry->CancelRoutineFreeMemory == FALSE);
       DokanFreeIrpEntry(irpEntry);
-
-	  isWriteIrpNull = TRUE;
-	  DDbgPrint("  EventWrite : writeIrp == NULL");
-	  DDbgPrint2("  EventWrite : writeIrp == NULL");
-
       continue;
 	}
 
@@ -747,11 +730,6 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
       // Cancel routine will run as soon as we release the lock
       InitializeListHead(&irpEntry->ListEntry);
       irpEntry->CancelRoutineFreeMemory = TRUE;
-
-	  isIoSetCancelRoutineReturnNull = TRUE;
-	  DDbgPrint("  EventWrite : IoSetCancelRoutine(writeIrp, DokanIrpCancelRoutine) == NULL");
-	  DDbgPrint2("  EventWrite : IoSetCancelRoutine(writeIrp, DokanIrpCancelRoutine) == NULL");
-
       continue;
     }
 
@@ -774,22 +752,9 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
       status = STATUS_INSUFFICIENT_RESOURCES;
     } else {
       PVOID buffer;
-	  DDbgPrint("  EventWrite CopyMemory\n");
-	  DDbgPrint2("  EventWrite CopyMemory\n");
-	  DDbgPrint("  EventLength %d, BufLength %d\n", eventContext->Length,
-		  eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength);
-	  DDbgPrint2("  EventLength %d, BufLength %d\n", eventContext->Length,
-		  eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength);
-
-	  if (eventContext->Length == 0) {
-		  DDbgPrint("  EventWrite : eventContext->Length == 0 !!\n");
-		  DDbgPrint2("  EventWrite : eventContext->Length == 0 !!\n");
-	  }
-
-	  if (eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength == 0) {
-		  DDbgPrint("  EventWrite : eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength == 0 !!\n");
-		  DDbgPrint2("  EventWrite : eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength == 0 !!\n");
-	  }
+	  // DDbgPrint("  EventWrite CopyMemory\n");
+	  // DDbgPrint("  EventLength %d, BufLength %d\n", eventContext->Length,
+		  // eventIrpSp->Parameters.DeviceIoControl.OutputBufferLength);
 
       if (Irp->MdlAddress)
         buffer = MmGetSystemAddressForMdlNormalSafe(Irp->MdlAddress);
@@ -808,37 +773,9 @@ DokanEventWrite(__in PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
 
     KeReleaseSpinLock(&vcb->Dcb->PendingIrp.ListLock, oldIrql);
 
-	if (isFoundCorrespondingIrp) {
-		DDbgPrint("  EventWrite : Success found corresponding IRP (irpEntry->SerialNumber == eventInfo->SerialNumber).");
-		DDbgPrint2("  EventWrite : Success found corresponding IRP (irpEntry->SerialNumber == eventInfo->SerialNumber).");
-	}
-	else {
-		DDbgPrint("  EventWrite : Cannot found corresponding IRP (irpEntry->SerialNumber != eventInfo->SerialNumber).");
-		DDbgPrint2("  EventWrite : Cannot found corresponding IRP (irpEntry->SerialNumber != eventInfo->SerialNumber).");
-	}
-
-	if (isWriteIrpNull) {
-		DDbgPrint("  EventWrite : WriteIrp is Null!! (writeIrp = irpEntry->Irp)");
-		DDbgPrint2("  EventWrite : WriteIrp is Null!! (writeIrp = irpEntry->Irp)");
-	}
-	else {
-		DDbgPrint("  EventWrite : WriteIrp is not Null. (writeIrp = irpEntry->Irp)");
-		DDbgPrint2("  EventWrite : WriteIrp is not Null. (writeIrp = irpEntry->Irp)");
-	}
-
-	if (isIoSetCancelRoutineReturnNull) {
-		DDbgPrint("  EventWrite : IoSetCancelRoutine return Null!!");
-		DDbgPrint2("  EventWrite : IoSetCancelRoutine return Null!!");
-	}
-	else {
-		DDbgPrint("  EventWrite : IoSetCancelRoutine return not Null.");
-		DDbgPrint2("  EventWrite : IoSetCancelRoutine return not Null.");
-	}
-
     Irp->IoStatus.Status = status;
     Irp->IoStatus.Information = info;
 
-	DDbgPrint("  EventWrite : Irp->IoStatus.Information = %lu (after Irp->IoStatus.Information = info)", Irp->IoStatus.Information);
 	DDbgPrint2("  EventWrite : Irp->IoStatus.Information = %lu (after Irp->IoStatus.Information = info)", Irp->IoStatus.Information);
 
     // this IRP will be completed by caller function
