@@ -72,7 +72,7 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
   BOOL bufferAllocated = FALSE;
   ULONG sizeOfEventInfo = sizeof(EVENT_INFORMATION);
   ULONG returnedLength = 0;
-  BOOL SendWriteRequestStatus = FALSE;
+  BOOL SendWriteRequestStatus = TRUE;	// otherwise DokanInstance->DokanOperations->WriteFile cannot be called
   DWORD SendWriteRequestLastError = 0;
 
   eventInfo = DispatchCommon(EventContext, sizeOfEventInfo, DokanInstance,
