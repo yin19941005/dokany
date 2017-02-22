@@ -21,9 +21,10 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 
 #include "dokani.h"
 
-VOID SendWriteRequest(HANDLE Handle, PEVENT_INFORMATION EventInfo,
-                      ULONG EventLength, PVOID Buffer, ULONG BufferLength, ULONG *ReturnedLengthOutPointer) {
-  BOOL status;
+BOOL SendWriteRequest(_In_ HANDLE Handle, _In_ PEVENT_INFORMATION EventInfo,
+                      _In_ ULONG EventLength, _In_ PVOID Buffer, _In_ ULONG BufferLength, 
+                      _Out_ ULONG *ReturnedLengthOutPointer, _Out_ DWORD *LastError) {
+  BOOL status = FALSE;
   ULONG returnedLength;
 
   DbgPrint("SendWriteRequest\n");
@@ -38,7 +39,7 @@ VOID SendWriteRequest(HANDLE Handle, PEVENT_INFORMATION EventInfo,
                            NULL             // synchronous call
                            );
 
-  DbgPrint("SendWriteRequest : status = %d, EventLength = %lu, BufferLength = %lu, returnedLength = %lu , EventInfo->SerialNumber = %X \n", status, EventLength, BufferLength, returnedLength, EventInfo->SerialNumber);
+  DbgPrint("SendWriteRequest : status = %d, EventLength = %lu, BufferLength = %lu, returnedLength = %lu , EventInfo->SerialNumber = %X, EventInfo->Status = %X \n", status, EventLength, BufferLength, returnedLength, EventInfo->SerialNumber, EventInfo->Status);
 
   if (returnedLength == 0) {
 	  DWORD errorCode = GetLastError();
@@ -48,11 +49,17 @@ VOID SendWriteRequest(HANDLE Handle, PEVENT_INFORMATION EventInfo,
   if (!status) {
     DWORD errorCode = GetLastError();
     DbgPrint("Ioctl failed with code %d\n", errorCode);
+	*LastError = errorCode;
+  }
+  else {
+	  *LastError = 0;
   }
 
   *ReturnedLengthOutPointer = returnedLength;
 
   DbgPrint("SendWriteRequest got %d bytes\n", returnedLength);
+
+  return status;
 }
 
 VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
@@ -65,7 +72,8 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
   BOOL bufferAllocated = FALSE;
   ULONG sizeOfEventInfo = sizeof(EVENT_INFORMATION);
   ULONG returnedLength = 0;
-  BOOL isRequestedBiggerMemory = FALSE;
+  BOOL SendWriteRequestStatus = FALSE;
+  DWORD SendWriteRequestLastError = 0;
 
   eventInfo = DispatchCommon(EventContext, sizeOfEventInfo, DokanInstance,
                              &fileInfo, &openInfo);
@@ -73,7 +81,6 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
   // Since driver requested bigger memory,
   // allocate enough memory and send it to driver
   if (EventContext->Operation.Write.RequestLength > 0) {
-    isRequestedBiggerMemory = TRUE;
     ULONG contextLength = EventContext->Operation.Write.RequestLength;
     PEVENT_CONTEXT contextBuf = (PEVENT_CONTEXT)malloc(contextLength);
     if (contextBuf == NULL) {
@@ -83,8 +90,8 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
     
 	DbgPrint("\tWriteFile : Before call SendWriteRequest, contextLength = %lu (contextLength = EventContext->Operation.Write.RequestLength)\n", contextLength);
 
-	SendWriteRequest(Handle, eventInfo, sizeOfEventInfo, contextBuf,
-                     contextLength, &returnedLength);
+	SendWriteRequestStatus = SendWriteRequest(Handle, eventInfo, sizeOfEventInfo, contextBuf,
+                     contextLength, &returnedLength, &SendWriteRequestLastError);
     EventContext = contextBuf;
     bufferAllocated = TRUE;
   }
@@ -103,12 +110,18 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
 
   DbgPrint("###WriteFile %04d\n", openInfo != NULL ? openInfo->EventId : -1);
 
-  if (returnedLength == 0 && isRequestedBiggerMemory) {
-	  DbgPrint("Unknown SendWriteRequest error : return 0 length when request bigger memory. \nUnknown SendWriteRequest error : EventContext had been destoryed. Return STATUS_ACCESS_DENIED. \n");
-	  status = STATUS_ACCESS_DENIED;
+  if (!SendWriteRequestStatus) {
+	  if (SendWriteRequestLastError == ERROR_OPERATION_ABORTED) {
+		  status = STATUS_CANCELLED;
+		  DbgPrint("WriteFile Error : User should already canceled the operation. Return STATUS_CANCELLED. \n");
+	  }
+	  else {
+		  status = DokanNtStatusFromWin32(SendWriteRequestLastError);
+		  DbgPrint("Unknown SendWriteRequest Error : LastError from SendWriteRequest = %lu. \nUnknown SendWriteRequest error : EventContext had been destoryed. Status = %X. \n", SendWriteRequestLastError, status);
+	  }
   }
   else {
-	  // for any case not requested bigger memory and the case requested bigger memory with returnedLength != 0
+	  // for the case SendWriteRequest success
 	  if (DokanInstance->DokanOperations->WriteFile) {
 		  status = DokanInstance->DokanOperations->WriteFile(
 			  EventContext->Operation.Write.FileName,
