@@ -134,7 +134,7 @@ PDokanFCB DokanGetFCB(__in PDokanVCB Vcb, __in PWCHAR FileName,
 
   // we don't have FCB
   if (fcb == NULL) {
-    DDbgPrint("  Allocate FCB for %ls\n", FileName);
+    DDbgPrint("  Allocating FCB for %ls\n", FileName);
 
     fcb = DokanAllocateFCB(Vcb, FileName, FileNameLength);
 
@@ -150,6 +150,7 @@ PDokanFCB DokanGetFCB(__in PDokanVCB Vcb, __in PWCHAR FileName,
     ASSERT(fcb != NULL);
 
     // we already have FCB
+	DDbgPrint("  Allocated FCB : %ls, %p\n", fcb->FileName.Buffer, fcb);
   } else {
     // FileName (argument) is never used and must be freed
     ExFreePool(FileName);
@@ -180,7 +181,7 @@ DokanFreeFCB(__in PDokanFCB Fcb) {
     RemoveEntryList(&Fcb->NextFCB);
     InitializeListHead(&Fcb->NextCCB);
 
-    DDbgPrint("  Free FCB:%p\n", Fcb);
+    DDbgPrint("  Free FCB : %ls, %p\n", Fcb->FileName.Buffer, Fcb);
 
     ExFreePool(Fcb->FileName.Buffer);
     Fcb->FileName.Buffer = NULL;

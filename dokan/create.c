@@ -193,6 +193,7 @@ VOID DispatchCreate(HANDLE Handle, // This handle is not for a file. It is for
   }
 
   DbgPrint("###Create %04d\n", eventId);
+  DbgPrint("\teventInfo.SerialNumber = %X, eventInfo.Status = %X, origFileName = %ls ", eventInfo.SerialNumber, eventInfo.Status, origFileName);
 
   openInfo->EventId = eventId++;
 
