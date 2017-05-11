@@ -142,8 +142,8 @@ VOID DispatchQuerySecurity(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo = DispatchCommon(EventContext, eventInfoLength, DokanInstance,
                              &fileInfo, &openInfo);
 
-  DbgPrint("###GetFileSecurity %04d\n",
-           openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###GetFileSecurity %04d, EventInfo->SerialNumber #%X \n",
+           openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   if (DokanInstance->DokanOperations->GetFileSecurity) {
     status = DokanInstance->DokanOperations->GetFileSecurity(
@@ -172,6 +172,8 @@ VOID DispatchQuerySecurity(HANDLE Handle, PEVENT_CONTEXT EventContext,
       // Filesystem Application should return STATUS_BUFFER_OVERFLOW in this
       // case.
       eventInfo->Status = STATUS_BUFFER_OVERFLOW;
+	  DbgPrint("\tEventContext->Operation.Security.BufferLength < lengthNeeded! Set STATUS_BUFFER_OVERFLOW. (###GetFileSecurity %04d EventInfo->SerialNumber #%X) \n",
+		  openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
     }
   }
 
@@ -194,7 +196,7 @@ VOID DispatchSetSecurity(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo = DispatchCommon(EventContext, eventInfoLength, DokanInstance,
                              &fileInfo, &openInfo);
 
-  DbgPrint("###SetSecurity %04d\n", openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###SetSecurity %04d, EventInfo->SerialNumber #%X \n", openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   securityDescriptor =
       (PCHAR)EventContext + EventContext->Operation.SetSecurity.BufferOffset;

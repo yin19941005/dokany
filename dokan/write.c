@@ -90,7 +90,7 @@ VOID DispatchWrite(HANDLE Handle, PEVENT_CONTEXT EventContext,
 
   CheckFileName(EventContext->Operation.Write.FileName);
 
-  DbgPrint("###WriteFile %04d\n", openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###WriteFile %04d, EventInfo->SerialNumber #%X \n", openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   if (!SendWriteRequestStatus) {
 	  if (SendWriteRequestLastError == ERROR_OPERATION_ABORTED) {

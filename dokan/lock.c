@@ -35,7 +35,7 @@ VOID DispatchLock(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo = DispatchCommon(EventContext, sizeOfEventInfo, DokanInstance,
                              &fileInfo, &openInfo);
 
-  DbgPrint("###Lock %04d\n", openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###Lock %04d, EventInfo->SerialNumber #%X \n", openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   eventInfo->Status = STATUS_NOT_IMPLEMENTED;
 

@@ -105,9 +105,20 @@ extern LOOKASIDE_LIST_EX g_DokanEResourceLookasideList;
     KdPrintEx(                                                                 \
         (DPFLTR_IHVDRIVER_ID, DPFLTR_TRACE_LEVEL, "[DokanFS] " __VA_ARGS__));  \
   }
+
+#define DDbgPrint2(...)                                                         \
+  if (FALSE) {                                                               \
+    KdPrintEx(                                                                 \
+        (DPFLTR_IHVDRIVER_ID, DPFLTR_TRACE_LEVEL, "[DokanFS] " __VA_ARGS__));  \
+  }
 #else
 #define DDbgPrint(...)                                                         \
   if (g_Debug) {                                                               \
+    DbgPrint("[DokanFS] " __VA_ARGS__);                                        \
+  }
+
+#define DDbgPrint2(...)                                                         \
+  if (FALSE) {                                                               \
     DbgPrint("[DokanFS] " __VA_ARGS__);                                        \
   }
 #endif

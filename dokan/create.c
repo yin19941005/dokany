@@ -129,6 +129,8 @@ VOID DispatchCreate(HANDLE Handle, // This handle is not for a file. It is for
   // this will be freed by Close
   openInfo = malloc(sizeof(DOKAN_OPEN_INFO));
   if (openInfo == NULL) {
+	DbgPrint("DispatchCreate : openInfo == NULL, EventInfo->SerialNumber #%X \n",
+		EventContext->SerialNumber);
     eventInfo.Status = STATUS_INSUFFICIENT_RESOURCES;
     SendEventInformation(Handle, &eventInfo, sizeof(EVENT_INFORMATION), NULL);
     return;

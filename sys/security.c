@@ -101,6 +101,9 @@ DokanDispatchQuerySecurity(__in PDEVICE_OBJECT DeviceObject, __in PIRP Irp) {
       __leave;
     }
 
+	DDbgPrint("  FileName:%wZ eventContext->SerialNumber #%X \n", &fcb->FileName, eventContext->SerialNumber);
+	DDbgPrint2("  FileName:%wZ eventContext->SerialNumber #%X \n", &fcb->FileName, eventContext->SerialNumber);
+
     if (Irp->UserBuffer != NULL && bufferLength > 0) {
       // make a MDL for UserBuffer that can be used later on another thread
       // context
@@ -149,6 +152,9 @@ VOID DokanCompleteQuerySecurity(__in PIRP_ENTRY IrpEntry,
 
   DDbgPrint("==> DokanCompleteQuerySecurity\n");
 
+  DDbgPrint("  EventInfo->SerialNumber #%X \n", EventInfo->SerialNumber);
+  DDbgPrint2("  EventInfo->SerialNumber #%X \n", EventInfo->SerialNumber);
+
   irp = IrpEntry->Irp;
   irpSp = IrpEntry->IrpSp;
 
@@ -160,11 +166,13 @@ VOID DokanCompleteQuerySecurity(__in PIRP_ENTRY IrpEntry,
 
   if (EventInfo->Status == STATUS_SUCCESS &&
       EventInfo->BufferLength <= bufferLength && buffer != NULL) {
-    if (!RtlValidRelativeSecurityDescriptor(
+	  if (!RtlValidRelativeSecurityDescriptor(
             EventInfo->Buffer, EventInfo->BufferLength,
             irpSp->Parameters.QuerySecurity.SecurityInformation)) {
       // No valid security descriptor to return.
       DDbgPrint(" Security Descriptor is not valid.\n");
+	  // For Kernel Debugging
+	  // DbgBreakPoint();
       info = 0;
       status = STATUS_INVALID_PARAMETER;
     } else {

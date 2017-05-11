@@ -338,8 +338,8 @@ VOID DispatchQueryVolumeInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo->Status = STATUS_NOT_IMPLEMENTED;
   eventInfo->BufferLength = 0;
 
-  DbgPrint("###QueryVolumeInfo %04d\n",
-           openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###QueryVolumeInfo %04d, EventInfo->SerialNumber #%X \n",
+           openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   switch (EventContext->Operation.Volume.FsInformationClass) {
   case FileFsVolumeInformation:

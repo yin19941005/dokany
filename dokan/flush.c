@@ -34,7 +34,7 @@ VOID DispatchFlush(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo = DispatchCommon(EventContext, sizeOfEventInfo, DokanInstance,
                              &fileInfo, &openInfo);
 
-  DbgPrint("###Flush %04d\n", openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###Flush %04d, EventInfo->SerialNumber #%X \n", openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   if (DokanInstance->DokanOperations->FlushFileBuffers) {
 

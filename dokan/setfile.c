@@ -231,9 +231,9 @@ VOID DispatchSetInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
   eventInfo = DispatchCommon(EventContext, sizeOfEventInfo, DokanInstance,
                              &fileInfo, &openInfo);
 
-  DbgPrint("###SetFileInfo %04d  %d\n",
+  DbgPrint("###SetFileInfo %04d  %d, EventInfo->SerialNumber #%X\n",
            openInfo != NULL ? openInfo->EventId : -1,
-           EventContext->Operation.SetFile.FileInformationClass);
+           EventContext->Operation.SetFile.FileInformationClass, EventContext->SerialNumber);
 
   switch (EventContext->Operation.SetFile.FileInformationClass) {
   case FileAllocationInformation:

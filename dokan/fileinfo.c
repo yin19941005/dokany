@@ -433,7 +433,7 @@ VOID DispatchQueryInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
 
   eventInfo->BufferLength = EventContext->Operation.File.BufferLength;
 
-  DbgPrint("###GetFileInfo %04d\n", openInfo != NULL ? openInfo->EventId : -1);
+  DbgPrint("###GetFileInfo %04d\n, EventInfo->SerialNumber #%X ", openInfo != NULL ? openInfo->EventId : -1, EventContext->SerialNumber);
 
   if (DokanInstance->DokanOperations->GetFileInformation) {
     status = DokanInstance->DokanOperations->GetFileInformation(

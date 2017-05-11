@@ -494,6 +494,8 @@ VOID DispatchDirectoryInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
       fileInfoClass != FileBothDirectoryInformation) {
 
     DbgPrint("not suported type %d\n", fileInfoClass);
+	DbgPrint("DispatchDirectoryInformation : EventInfo->SerialNumber #%X \n",
+		EventContext->SerialNumber);
 
     // send directory info to driver
     eventInfo->BufferLength = 0;
@@ -512,6 +514,8 @@ VOID DispatchDirectoryInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
     if (openInfo->DirListHead != NULL) {
       InitializeListHead(openInfo->DirListHead);
     } else {
+      DbgPrint("DispatchDirectoryInformation : openInfo->DirListHead == NULL, EventInfo->SerialNumber #%X \n",
+		EventContext->SerialNumber);
       eventInfo->BufferLength = 0;
       eventInfo->Status = STATUS_NO_MEMORY;
       SendEventInformation(Handle, eventInfo, sizeOfEventInfo, DokanInstance);
@@ -526,7 +530,7 @@ VOID DispatchDirectoryInformation(HANDLE Handle, PEVENT_CONTEXT EventContext,
 
   if (IsListEmpty(openInfo->DirListHead)) {
 
-    DbgPrint("###FindFiles %04d\n", openInfo->EventId);
+    DbgPrint("###FindFiles %04d, EventInfo->SerialNumber #%X \n", openInfo->EventId, EventContext->SerialNumber);
 
     // if user defined FindFilesWithPattern
     if (DokanInstance->DokanOperations->FindFilesWithPattern) {

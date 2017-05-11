@@ -204,6 +204,9 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
   SECURITY_ATTRIBUTES securityAttrib;
   ACCESS_MASK genericDesiredAccess;
 
+  // Reset the timer
+  // DokanResetTimeout(300000, DokanFileInfo); // 300000 is the MAX value
+
   securityAttrib.nLength = sizeof(securityAttrib);
   securityAttrib.lpSecurityDescriptor =
       SecurityContext->AccessState.SecurityDescriptor;
@@ -316,11 +319,20 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
 
   if (DokanFileInfo->IsDirectory) {
     // It is a create directory request
+
+	// Reset the timer
+	// DokanResetTimeout(300000, DokanFileInfo); // 300000 is the MAX value
+
     if (creationDisposition == CREATE_NEW) {
       if (!CreateDirectory(filePath, &securityAttrib)) {
         error = GetLastError();
         DbgPrint(L"\terror code = %d\n\n", error);
         status = DokanNtStatusFromWin32(error);
+		
+		if (status == STATUS_PRIVILEGE_NOT_HELD)
+		{
+			// DebugBreak();
+		}
       }
     } else if (creationDisposition == OPEN_ALWAYS) {
 
@@ -331,6 +343,11 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
         if (error != ERROR_ALREADY_EXISTS) {
           DbgPrint(L"\terror code = %d\n\n", error);
           status = DokanNtStatusFromWin32(error);
+
+		  if (status == STATUS_PRIVILEGE_NOT_HELD)
+		  {
+			  // DebugBreak();
+		  }
         }
       }
     }
@@ -353,6 +370,11 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
         DbgPrint(L"\terror code = %d\n\n", error);
 
         status = DokanNtStatusFromWin32(error);
+
+		if (status == STATUS_PRIVILEGE_NOT_HELD)
+		{
+			// DebugBreak();
+		}
       } else {
         DokanFileInfo->Context =
             (ULONG64)handle; // save the file handle in Context
@@ -361,11 +383,15 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
   } else {
     // It is a create file request
 
+	// Reset the timer
+	// DokanResetTimeout(300000, DokanFileInfo); // 300000 is the MAX value
+
     if (fileAttr != INVALID_FILE_ATTRIBUTES &&
         (fileAttr & FILE_ATTRIBUTE_DIRECTORY) &&
         CreateDisposition == FILE_CREATE)
       return STATUS_OBJECT_NAME_COLLISION; // File already exist because
                                            // GetFileAttributes found it
+
     handle = CreateFile(
         filePath,
         genericDesiredAccess, // GENERIC_READ|GENERIC_WRITE|GENERIC_EXECUTE,
@@ -380,6 +406,11 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
       DbgPrint(L"\terror code = %d\n\n", error);
 
       status = DokanNtStatusFromWin32(error);
+
+	  if (status == STATUS_PRIVILEGE_NOT_HELD)
+	  {
+		  // DebugBreak();
+	  }
     } else {
       DokanFileInfo->Context =
           (ULONG64)handle; // save the file handle in Context
@@ -1093,11 +1124,41 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   WCHAR filePath[DOKAN_MAX_PATH];
   BOOLEAN requestingSaclInfo;
 
+  // GetSecurityDescriptorDacl output parameter
+  BOOL               lpbDaclPresent;
+  PACL                 pDacl;
+  BOOL               lpbDaclDefaulted;
+
+  // GetSecurityDescriptorSacl output parameter
+  BOOL               lpbSaclPresent;
+  PACL                 pSacl;
+  BOOL               lpbSaclDefaulted;
+
+  BOOL isGetUserObjectSecuritySuccessful = FALSE;
+
   UNREFERENCED_PARAMETER(DokanFileInfo);
 
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
 
   DbgPrint(L"GetFileSecurity %s\n", filePath);
+
+  DbgPrint(L"  Raw input parameter : *SecurityInformation = %X, BufferLength = %lu, *LengthNeeded = %lu \n", *SecurityInformation, BufferLength, *LengthNeeded);
+
+  if (GetSecurityDescriptorDacl(SecurityDescriptor, &lpbDaclPresent, &pDacl, &lpbDaclDefaulted))
+  {
+	  DbgPrint(L"  Raw input parameter : lpbDaclPresent = %d, lpbDaclDefaulted = %d, pDacl not inplemented to print \n", lpbDaclPresent, lpbDaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  Raw input parameter : GetSecurityDescriptorDacl Failed \n");
+  }
+
+  if (GetSecurityDescriptorSacl(SecurityInformation, &lpbSaclPresent, &pSacl, &lpbSaclDefaulted))
+  {
+	  DbgPrint(L"  Raw input parameter : lpbSaclPresent = %d, lpbSaclDefaulted = %d, pSacl not inplemented to print \n", lpbSaclPresent, lpbSaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  Raw input parameter : GetSecurityDescriptorSacl Failed \n");
+  }
 
   MirrorCheckFlag(*SecurityInformation, FILE_SHARE_READ);
   MirrorCheckFlag(*SecurityInformation, OWNER_SECURITY_INFORMATION);
@@ -1124,6 +1185,12 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   }
 
   DbgPrint(L"  Opening new handle with READ_CONTROL access\n");
+
+  if (requestingSaclInfo && g_HasSeSecurityPrivilege)
+	  DbgPrint(L"  Adding ACCESS_SYSTEM_SECURITY Flag when CreateFile Handle\n");
+  else
+	  DbgPrint(L"  Just using READ_CONTROL Flag when CreateFile Handle\n");
+
   HANDLE handle = CreateFile(
       filePath, READ_CONTROL | ((requestingSaclInfo && g_HasSeSecurityPrivilege)
                                     ? ACCESS_SYSTEM_SECURITY
@@ -1140,6 +1207,24 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
     return DokanNtStatusFromWin32(error);
   }
 
+  DbgPrint(L"  Before GetUserObjectSecurity : *SecurityInformation = %X, BufferLength = %lu, *LengthNeeded = %lu \n", *SecurityInformation, BufferLength, *LengthNeeded);
+
+  if (GetSecurityDescriptorDacl(SecurityDescriptor, &lpbDaclPresent, &pDacl, &lpbDaclDefaulted))
+  {
+	  DbgPrint(L"  Before GetUserObjectSecurity : lpbDaclPresent = %d, lpbDaclDefaulted = %d, pDacl not inplemented to print \n", lpbDaclPresent, lpbDaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  Before GetUserObjectSecurity : GetSecurityDescriptorDacl Failed \n");
+  }
+
+  if (GetSecurityDescriptorSacl(SecurityInformation, &lpbSaclPresent, &pSacl, &lpbSaclDefaulted))
+  {
+	  DbgPrint(L"  Before GetUserObjectSecurity : lpbSaclPresent = %d, lpbSaclDefaulted = %d, pSacl not inplemented to print \n", lpbSaclPresent, lpbSaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  Before GetUserObjectSecurity : GetSecurityDescriptorSacl Failed \n");
+  }
+
   if (!GetUserObjectSecurity(handle, SecurityInformation, SecurityDescriptor,
                              BufferLength, LengthNeeded)) {
     int error = GetLastError();
@@ -1148,12 +1233,66 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
       CloseHandle(handle);
       return STATUS_BUFFER_OVERFLOW;
     } else {
+	  DbgPrint(L"  After GetUserObjectSecurity (Error) : *SecurityInformation = %X, BufferLength = %lu, *LengthNeeded = %lu \n", *SecurityInformation, BufferLength, *LengthNeeded);
+
+	  if (GetSecurityDescriptorDacl(SecurityDescriptor, &lpbDaclPresent, &pDacl, &lpbDaclDefaulted))
+	  {
+		  DbgPrint(L"  After GetUserObjectSecurity (Error) : lpbDaclPresent = %d, lpbDaclDefaulted = %d, pDacl not inplemented to print \n", lpbDaclPresent, lpbDaclDefaulted);
+	  }
+	  else {
+		  DbgPrint(L"  After GetUserObjectSecurity (Error) : GetSecurityDescriptorDacl Failed \n");
+	  }
+
+	  if (GetSecurityDescriptorSacl(SecurityInformation, &lpbSaclPresent, &pSacl, &lpbSaclDefaulted))
+	  {
+		  DbgPrint(L"  After GetUserObjectSecurity (Error) : lpbSaclPresent = %d, lpbSaclDefaulted = %d, pSacl not inplemented to print \n", lpbSaclPresent, lpbSaclDefaulted);
+	  }
+	  else {
+		  DbgPrint(L"  After GetUserObjectSecurity (Error) : GetSecurityDescriptorSacl Failed \n");
+	  }
+
       DbgPrint(L"  GetUserObjectSecurity error: %d\n", error);
       CloseHandle(handle);
       return DokanNtStatusFromWin32(error);
     }
   }
+  else {
+	  if (BufferLength < *LengthNeeded) {
+		  DbgPrint(L"  GetUserObjectSecurity : BufferLength < *LengthNeeded!! \n");
+	  }
+
+	  isGetUserObjectSecuritySuccessful = TRUE;
+
+  }
   CloseHandle(handle);
+  
+  DbgPrint(L"  After GetUserObjectSecurity : *SecurityInformation = %X, BufferLength = %lu, *LengthNeeded = %lu \n", *SecurityInformation, BufferLength, *LengthNeeded);
+
+  if (GetSecurityDescriptorDacl(SecurityDescriptor, &lpbDaclPresent, &pDacl, &lpbDaclDefaulted))
+  {
+	  DbgPrint(L"  After GetUserObjectSecurity : lpbDaclPresent = %d, lpbDaclDefaulted = %d, pDacl not inplemented to print \n", lpbDaclPresent, lpbDaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  After GetUserObjectSecurity : GetSecurityDescriptorDacl Failed \n");
+  }
+
+  if (GetSecurityDescriptorSacl(SecurityInformation, &lpbSaclPresent, &pSacl, &lpbSaclDefaulted))
+  {
+	  DbgPrint(L"  After GetUserObjectSecurity : lpbSaclPresent = %d, lpbSaclDefaulted = %d, pSacl not inplemented to print \n", lpbSaclPresent, lpbSaclDefaulted);
+  }
+  else {
+	  DbgPrint(L"  After GetUserObjectSecurity : GetSecurityDescriptorSacl Failed \n");
+  }
+
+  DWORD securityDescriptorLength = GetSecurityDescriptorLength(SecurityDescriptor);
+  DbgPrint(L"  securityDescriptorLength : %lu (by GetSecurityDescriptorLength) \n", securityDescriptorLength);
+
+  if (isGetUserObjectSecuritySuccessful) {
+	  DbgPrint(L"  isGetUserObjectSecuritySuccessful is true,  *LengthNeeded = securityDescriptorLength \n");
+	  *LengthNeeded = securityDescriptorLength;
+  }
+
+  DbgPrint(L"GetFileSecurity Successful for %s\n", filePath);
 
   return STATUS_SUCCESS;
 }
