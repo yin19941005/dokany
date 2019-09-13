@@ -31,6 +31,7 @@ THE SOFTWARE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <winbase.h>
+#include <sddl.h>
 
 //#define WIN10_ENABLE_LONG_PATH
 #ifdef WIN10_ENABLE_LONG_PATH
@@ -1280,6 +1281,689 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   return STATUS_SUCCESS;
 }
 
+static void
+MirrorCheckSecurityInformationFlags(PSECURITY_INFORMATION SecurityInformation) {
+  MirrorCheckFlag(*SecurityInformation, FILE_SHARE_READ);
+  MirrorCheckFlag(*SecurityInformation, OWNER_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, GROUP_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, DACL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, SACL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, LABEL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, ATTRIBUTE_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, SCOPE_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation,
+                  PROCESS_TRUST_LABEL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, BACKUP_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, PROTECTED_DACL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, PROTECTED_SACL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, UNPROTECTED_DACL_SECURITY_INFORMATION);
+  MirrorCheckFlag(*SecurityInformation, UNPROTECTED_SACL_SECURITY_INFORMATION);
+}
+
+static void
+MirrorCheckSecurityDescriptorControl(WCHAR *filePath,
+                                     PSECURITY_DESCRIPTOR SecurityDescriptor) {
+  SECURITY_DESCRIPTOR_CONTROL control;
+  DWORD revision;
+  BOOL result =
+      GetSecurityDescriptorControl(SecurityDescriptor, &control, &revision);
+
+  if (result) {
+    DbgPrint(L"\t SECURITY_DESCRIPTOR_CONTROL: \n");
+    MirrorCheckFlag(control, SE_OWNER_DEFAULTED);
+    MirrorCheckFlag(control, SE_GROUP_DEFAULTED);
+    MirrorCheckFlag(control, SE_DACL_PRESENT);
+    MirrorCheckFlag(control, SE_SACL_PRESENT);
+    MirrorCheckFlag(control, SE_SACL_DEFAULTED);
+    MirrorCheckFlag(control, SE_DACL_AUTO_INHERIT_REQ);
+    MirrorCheckFlag(control, SE_SACL_AUTO_INHERIT_REQ);
+    MirrorCheckFlag(control, SE_DACL_AUTO_INHERITED);
+    MirrorCheckFlag(control, SE_SACL_AUTO_INHERITED);
+    MirrorCheckFlag(control, SE_DACL_PROTECTED);
+    MirrorCheckFlag(control, SE_SACL_PROTECTED);
+    MirrorCheckFlag(control, SE_RM_CONTROL_VALID);
+    MirrorCheckFlag(control, SE_SELF_RELATIVE);
+  } else {
+    DbgPrint(L"GetSecurityDescriptorControl failed on SetFileSecurity %s\n",
+             filePath);
+  }
+}
+
+static void
+MirrorCheckSecurityDescriptorDacl(WCHAR *filePath,
+                                  PSECURITY_DESCRIPTOR SecurityDescriptor) {
+  BOOL bDaclPresent;
+  PACL pDacl;
+  BOOL bDaclDefaulted;
+
+  BOOL result = GetSecurityDescriptorDacl(SecurityDescriptor, &bDaclPresent,
+                                          &pDacl, &bDaclDefaulted);
+  if (result) {
+    if (bDaclPresent) {
+      WORD aceCount = pDacl->AceCount;
+      WORD aclSize = pDacl->AclSize;
+      DbgPrint(L"Dacl, AceCount %d, AclSize %d, SetFileSecurity %s\n", aceCount,
+               aclSize, filePath);
+    } else {
+      DbgPrint(L"bDaclPresent is false on GetSecurityDescriptorDacl on "
+               L"SetFileSecurity %s\n",
+               filePath);
+    }
+  } else {
+    DbgPrint(L"GetSecurityDescriptorDacl failed on SetFileSecurity %s\n",
+             filePath);
+  }
+}
+
+static BOOL MirrorPrivateAddAceToDacl(_In_ WCHAR *filePath, _In_ WCHAR *aceName,
+                                      _In_ unsigned int aceCount,
+                                      _In_ PVOID *ace,
+                                      _In_ BYTE *aceAclRevision,
+                                      _Inout_ PACL pOutputDacl) {
+  for (unsigned int i = 0; i < aceCount; i++) {
+    DbgPrint(L"%s %d, %p, on SetFileSecurity %s\n", aceName, i, ace[i],
+             filePath);
+
+    // Add the ACE to the new ACL.
+    if (!AddAce(pOutputDacl, aceAclRevision[i], MAXDWORD, ace[i],
+                ((PACE_HEADER)ace[i])->AceSize)) {
+      int error = GetLastError();
+      DbgPrint(L"AddAce %d from %s failed with size %d on "
+               L"SetFileSecurity %s, "
+               L"lastError = %d\n",
+               i, aceName, ((PACE_HEADER)ace[i])->AceSize, filePath, error);
+      return FALSE;
+    } else {
+      DbgPrint(L"AddAce %d from %s succeed with size %d on "
+               L"SetFileSecurity %s\n",
+               i, aceName, ((PACE_HEADER)ace[i])->AceSize, filePath);
+    }
+  }
+  return TRUE;
+}
+
+static void MirrorPrivatePutAceToArray(_Inout_ unsigned int *aceCount,
+                                       PVOID *ace, BYTE *aceAclRevision,
+                                       _In_ PVOID aceToPut,
+                                       _In_ BYTE aceAclRevisionToPut) {
+  ace[*aceCount] = aceToPut;
+  aceAclRevision[*aceCount] = aceAclRevisionToPut;
+  (*aceCount)++;
+}
+
+static BOOL MirrorPrivateMergeDaclInCanonicalOrder(_In_ WCHAR *filePath,
+                                                   _In_ BOOL bFirstDaclPresent,
+                                                   _In_ PACL pFirstDacl,
+                                                   _In_ BOOL bSecondDaclPresent,
+                                                   _In_ PACL pSecondDacl,
+                                                   _Inout_ PACL pOutputDacl) {
+  BOOL resultToReturn = TRUE;
+  unsigned int i;
+  PVOID pTempAce;
+  DWORD dwFirstDaclAceCount = 0;
+  if (bFirstDaclPresent && pFirstDacl != NULL) {
+    dwFirstDaclAceCount = pFirstDacl->AceCount;
+  }
+  DWORD dwSecondDaclAceCount = 0;
+  if (bSecondDaclPresent && pSecondDacl->AceCount) {
+    dwSecondDaclAceCount = pSecondDacl->AceCount;
+  }
+  DWORD dwTotalDaclAceCount = dwFirstDaclAceCount + dwSecondDaclAceCount;
+  // explicit Deny Ace
+  unsigned int explicitDeniedAceCount = 0;
+  PVOID *explicitDeniedAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitDeniedAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitDeniedObjectAceCount = 0;
+  PVOID *explicitDeniedObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitDeniedObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitDeniedCallbackAceCount = 0;
+  PVOID *explicitDeniedCallbackAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitDeniedCallbackAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitDeniedCallbackObjectAceCount = 0;
+  PVOID *explicitDeniedCallbackObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitDeniedCallbackObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+  // explicit Allow Ace
+  unsigned int explicitAllowedAceCount = 0;
+  PVOID *explicitAllowedAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitAllowedAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitAllowedObjectAceCount = 0;
+  PVOID *explicitAllowedObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitAllowedObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitAllowedCallbackAceCount = 0;
+  PVOID *explicitAllowedCallbackAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitAllowedCallbackAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int explicitAllowedCallbackObjectAceCount = 0;
+  PVOID *explicitAllowedCallbackObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitAllowedCallbackObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+  // explicit remaining unknown Ace
+  unsigned int explicitUnknownAceCount = 0;
+  PVOID *explicitUnknownAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *explicitUnknownAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  // inherited Deny Ace
+  unsigned int inheritedDeniedAceCount = 0;
+  PVOID *inheritedDeniedAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedDeniedAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedDeniedObjectAceCount = 0;
+  PVOID *inheritedDeniedObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedDeniedObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedDeniedCallbackAceCount = 0;
+  PVOID *inheritedDeniedCallbackAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedDeniedCallbackAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedDeniedCallbackObjectAceCount = 0;
+  PVOID *inheritedDeniedCallbackObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedDeniedCallbackObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+  // inherited Allow Ace
+  unsigned int inheritedAllowedAceCount = 0;
+  PVOID *inheritedAllowedAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedAllowedAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedAllowedObjectAceCount = 0;
+  PVOID *inheritedAllowedObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedAllowedObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedAllowedCallbackAceCount = 0;
+  PVOID *inheritedAllowedCallbackAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedAllowedCallbackAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  unsigned int inheritedAllowedCallbackObjectAceCount = 0;
+  PVOID *inheritedAllowedCallbackObjectAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedAllowedCallbackObjectAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+  // inherited remaining unknown Ace
+  unsigned int inheritedUnknownAceCount = 0;
+  PVOID *inheritedUnknownAce =
+      (PVOID *)calloc(dwTotalDaclAceCount, sizeof(PVOID));
+  BYTE *inheritedUnknownAceAclRevision =
+      (BYTE *)calloc(dwTotalDaclAceCount, sizeof(BYTE));
+
+  __try {
+    // If first DACL is present, copy it to a new DACL if it is explicit ACEs.
+    if (bFirstDaclPresent) {
+      DbgPrint(L"bFirstDaclPresent on SetFileSecurity %s\n", filePath);
+      // Copy the ACEs to the new ACL.
+      if (pFirstDacl->AceCount) {
+        DbgPrint(L"firstDaclAceCount is true on SetFileSecurity %s\n",
+                 filePath);
+        for (i = 0; i < pFirstDacl->AceCount; i++) {
+          // Get an ACE.
+          if (!GetAce(pFirstDacl, i, &pTempAce)) {
+            DbgPrint(L"GetAce from pFirstDacl failed on SetFileSecurity %s\n",
+                     filePath);
+            resultToReturn = FALSE;
+            __leave;
+          }
+
+          // if it is a inherited ace
+          if (((PACE_HEADER)pTempAce)->AceFlags & INHERITED_ACE) {
+            DbgPrint(L"GetAce %d from pFirstDacl AceFlag & INHERITED_ACE is "
+                     L"true (%p) "
+                     L"on SetFileSecurity %s\n",
+                     i, pTempAce, filePath);
+
+            switch (((PACE_HEADER)pTempAce)->AceType) {
+            case ACCESS_DENIED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedAceCount,
+                                         inheritedDeniedAce,
+                                         inheritedDeniedAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedObjectAceCount,
+                                         inheritedDeniedObjectAce,
+                                         inheritedDeniedObjectAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedCallbackAceCount,
+                                         inheritedDeniedCallbackAce,
+                                         inheritedDeniedCallbackAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &inheritedDeniedCallbackObjectAceCount,
+                  inheritedDeniedCallbackObjectAce,
+                  inheritedDeniedCallbackObjectAceAclRevision, pTempAce,
+                  pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedAceCount,
+                                         inheritedAllowedAce,
+                                         inheritedAllowedAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedObjectAceCount,
+                                         inheritedAllowedObjectAce,
+                                         inheritedAllowedObjectAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedCallbackAceCount,
+                                         inheritedAllowedCallbackAce,
+                                         inheritedAllowedCallbackAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &inheritedAllowedCallbackObjectAceCount,
+                  inheritedAllowedCallbackObjectAce,
+                  inheritedAllowedCallbackObjectAceAclRevision, pTempAce,
+                  pFirstDacl->AclRevision);
+              break;
+            }
+            default: {
+              MirrorPrivatePutAceToArray(&inheritedUnknownAceCount,
+                                         inheritedUnknownAce,
+                                         inheritedUnknownAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            }
+          } else {
+            DbgPrint(L"GetAce %d from pFirstDacl AceFlag & INHERITED_ACE is "
+                     L"false (%p) "
+                     L"on SetFileSecurity %s\n",
+                     i, pTempAce, filePath);
+
+            switch (((PACE_HEADER)pTempAce)->AceType) {
+            case ACCESS_DENIED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedAceCount,
+                                         explicitDeniedAce,
+                                         explicitDeniedAceAclRevision, pTempAce,
+                                         pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedObjectAceCount,
+                                         explicitDeniedObjectAce,
+                                         explicitDeniedObjectAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedCallbackAceCount,
+                                         explicitDeniedCallbackAce,
+                                         explicitDeniedCallbackAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &explicitDeniedCallbackObjectAceCount,
+                  explicitDeniedCallbackObjectAce,
+                  explicitDeniedCallbackObjectAceAclRevision, pTempAce,
+                  pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedAceCount,
+                                         explicitAllowedAce,
+                                         explicitAllowedAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedObjectAceCount,
+                                         explicitAllowedObjectAce,
+                                         explicitAllowedObjectAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedCallbackAceCount,
+                                         explicitAllowedCallbackAce,
+                                         explicitAllowedCallbackAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &explicitAllowedCallbackObjectAceCount,
+                  explicitAllowedCallbackObjectAce,
+                  explicitAllowedCallbackObjectAceAclRevision, pTempAce,
+                  pFirstDacl->AclRevision);
+              break;
+            }
+            default: {
+              MirrorPrivatePutAceToArray(&explicitUnknownAceCount,
+                                         explicitUnknownAce,
+                                         explicitUnknownAceAclRevision,
+                                         pTempAce, pFirstDacl->AclRevision);
+              break;
+            }
+            }
+          }
+        }
+      } else {
+        DbgPrint(L"firstDaclAceCount is false on SetFileSecurity %s\n",
+                 filePath);
+      }
+    }
+
+    // If second DACL is present, copy it to a new DACL if it is explicit ACEs.
+    if (bSecondDaclPresent) {
+      DbgPrint(L"bSecondDaclPresent on SetFileSecurity %s\n", filePath);
+      // Copy the ACEs to the new ACL.
+      if (pSecondDacl->AceCount) {
+        DbgPrint(L"secondDaclAceCount is true on SetFileSecurity %s\n",
+                 filePath);
+        for (i = 0; i < pSecondDacl->AceCount; i++) {
+          // Get an ACE.
+          if (!GetAce(pSecondDacl, i, &pTempAce)) {
+            DbgPrint(L"GetAce for pSecondDacl failed on SetFileSecurity %s\n",
+                     filePath);
+            resultToReturn = FALSE;
+            __leave;
+          }
+
+          // if it is a inherited ace
+          if (((PACE_HEADER)pTempAce)->AceFlags & INHERITED_ACE) {
+            DbgPrint(L"GetAce %d from pSecondDacl AceFlag & INHERITED_ACE is "
+                     L"true (%p) "
+                     L"on SetFileSecurity %s\n",
+                     i, pTempAce, filePath);
+
+            switch (((PACE_HEADER)pTempAce)->AceType) {
+            case ACCESS_DENIED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedAceCount,
+                                         inheritedDeniedAce,
+                                         inheritedDeniedAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedObjectAceCount,
+                                         inheritedDeniedObjectAce,
+                                         inheritedDeniedObjectAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedDeniedCallbackAceCount,
+                                         inheritedDeniedCallbackAce,
+                                         inheritedDeniedCallbackAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &inheritedDeniedCallbackObjectAceCount,
+                  inheritedDeniedCallbackObjectAce,
+                  inheritedDeniedCallbackObjectAceAclRevision, pTempAce,
+                  pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedAceCount,
+                                         inheritedAllowedAce,
+                                         inheritedAllowedAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedObjectAceCount,
+                                         inheritedAllowedObjectAce,
+                                         inheritedAllowedObjectAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&inheritedAllowedCallbackAceCount,
+                                         inheritedAllowedCallbackAce,
+                                         inheritedAllowedCallbackAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &inheritedAllowedCallbackObjectAceCount,
+                  inheritedAllowedCallbackObjectAce,
+                  inheritedAllowedCallbackObjectAceAclRevision, pTempAce,
+                  pSecondDacl->AclRevision);
+              break;
+            }
+            default: {
+              MirrorPrivatePutAceToArray(&inheritedUnknownAceCount,
+                                         inheritedUnknownAce,
+                                         inheritedUnknownAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            }
+          } else {
+            DbgPrint(L"GetAce %d from pSecondDacl AceFlag & INHERITED_ACE is "
+                     L"false (%p) "
+                     L"on SetFileSecurity %s\n",
+                     i, pTempAce, filePath);
+
+            switch (((PACE_HEADER)pTempAce)->AceType) {
+            case ACCESS_DENIED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedAceCount,
+                                         explicitDeniedAce,
+                                         explicitDeniedAceAclRevision, pTempAce,
+                                         pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedObjectAceCount,
+                                         explicitDeniedObjectAce,
+                                         explicitDeniedObjectAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitDeniedCallbackAceCount,
+                                         explicitDeniedCallbackAce,
+                                         explicitDeniedCallbackAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &explicitDeniedCallbackObjectAceCount,
+                  explicitDeniedCallbackObjectAce,
+                  explicitDeniedCallbackObjectAceAclRevision, pTempAce,
+                  pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedAceCount,
+                                         explicitAllowedAce,
+                                         explicitAllowedAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedObjectAceCount,
+                                         explicitAllowedObjectAce,
+                                         explicitAllowedObjectAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(&explicitAllowedCallbackAceCount,
+                                         explicitAllowedCallbackAce,
+                                         explicitAllowedCallbackAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE: {
+              MirrorPrivatePutAceToArray(
+                  &explicitAllowedCallbackObjectAceCount,
+                  explicitAllowedCallbackObjectAce,
+                  explicitAllowedCallbackObjectAceAclRevision, pTempAce,
+                  pSecondDacl->AclRevision);
+              break;
+            }
+            default: {
+              MirrorPrivatePutAceToArray(&explicitUnknownAceCount,
+                                         explicitUnknownAce,
+                                         explicitUnknownAceAclRevision,
+                                         pTempAce, pSecondDacl->AclRevision);
+              break;
+            }
+            }
+          }
+        }
+      } else {
+        DbgPrint(L"secondDaclAceCount is false on SetFileSecurity %s\n",
+                 filePath);
+      }
+    }
+
+    // add all type of ace to dacl in CanonicalOrder, any one fail, return FALSE
+    if (!(MirrorPrivateAddAceToDacl(
+              filePath, L"explicitDeniedAce", explicitDeniedAceCount,
+              explicitDeniedAce, explicitDeniedAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitDeniedObjectAce",
+              explicitDeniedObjectAceCount, explicitDeniedObjectAce,
+              explicitDeniedObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitDeniedCallbackAce",
+              explicitDeniedCallbackAceCount, explicitDeniedCallbackAce,
+              explicitDeniedCallbackAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitDeniedCallbackObjectAce",
+              explicitDeniedCallbackObjectAceCount,
+              explicitDeniedCallbackObjectAce,
+              explicitDeniedCallbackObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitAllowedAce", explicitAllowedAceCount,
+              explicitAllowedAce, explicitAllowedAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitAllowedObjectAce",
+              explicitAllowedObjectAceCount, explicitAllowedObjectAce,
+              explicitAllowedObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitAllowedCallbackAce",
+              explicitAllowedCallbackAceCount, explicitAllowedCallbackAce,
+              explicitAllowedCallbackAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitAllowedCallbackObjectAce",
+              explicitAllowedCallbackObjectAceCount,
+              explicitAllowedCallbackObjectAce,
+              explicitAllowedCallbackObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"explicitUnknownAce", explicitUnknownAceCount,
+              explicitUnknownAce, explicitUnknownAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedDeniedAce", inheritedDeniedAceCount,
+              inheritedDeniedAce, inheritedDeniedAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedDeniedObjectAce",
+              inheritedDeniedObjectAceCount, inheritedDeniedObjectAce,
+              inheritedDeniedObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedDeniedCallbackAce",
+              inheritedDeniedCallbackAceCount, inheritedDeniedCallbackAce,
+              inheritedDeniedCallbackAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedDeniedCallbackObjectAce",
+              inheritedDeniedCallbackObjectAceCount,
+              inheritedDeniedCallbackObjectAce,
+              inheritedDeniedCallbackObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedAllowedAce", inheritedAllowedAceCount,
+              inheritedAllowedAce, inheritedAllowedAceAclRevision,
+              pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedAllowedObjectAce",
+              inheritedAllowedObjectAceCount, inheritedAllowedObjectAce,
+              inheritedAllowedObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedAllowedCallbackAce",
+              inheritedAllowedCallbackAceCount, inheritedAllowedCallbackAce,
+              inheritedAllowedCallbackAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedAllowedCallbackObjectAce",
+              inheritedAllowedCallbackObjectAceCount,
+              inheritedAllowedCallbackObjectAce,
+              inheritedAllowedCallbackObjectAceAclRevision, pOutputDacl) &&
+          MirrorPrivateAddAceToDacl(
+              filePath, L"inheritedUnknownAce", inheritedUnknownAceCount,
+              inheritedUnknownAce, inheritedUnknownAceAclRevision,
+              pOutputDacl))) {
+      resultToReturn = FALSE;
+      __leave;
+    }
+
+  } __finally {
+    // cleanup the mermory
+    free(explicitDeniedAce);
+    free(explicitDeniedObjectAce);
+    free(explicitDeniedCallbackAce);
+    free(explicitDeniedCallbackObjectAce);
+    free(explicitAllowedAce);
+    free(explicitAllowedObjectAce);
+    free(explicitAllowedCallbackAce);
+    free(explicitAllowedCallbackObjectAce);
+    free(explicitUnknownAce);
+    free(inheritedDeniedAce);
+    free(inheritedDeniedObjectAce);
+    free(inheritedDeniedCallbackAce);
+    free(inheritedDeniedCallbackObjectAce);
+    free(inheritedAllowedAce);
+    free(inheritedAllowedObjectAce);
+    free(inheritedAllowedCallbackAce);
+    free(inheritedAllowedCallbackObjectAce);
+    free(inheritedUnknownAce);
+  }
+
+  return resultToReturn;
+}
+
 static NTSTATUS DOKAN_CALLBACK MirrorSetFileSecurity(
   LPCWSTR FileName, PSECURITY_INFORMATION SecurityInformation,
   PSECURITY_DESCRIPTOR SecurityDescriptor, ULONG SecurityDescriptorLength,
@@ -1299,11 +1983,388 @@ static NTSTATUS DOKAN_CALLBACK MirrorSetFileSecurity(
     return STATUS_INVALID_HANDLE;
   }
 
-  if (!SetUserObjectSecurity(handle, SecurityInformation, SecurityDescriptor)) {
-    int error = GetLastError();
-    DbgPrint(L"  SetUserObjectSecurity error: %d\n", error);
-    return DokanNtStatusFromWin32(error);
+  MirrorCheckSecurityInformationFlags(SecurityInformation);
+
+  // SECURITY_DESCRIPTOR
+  MirrorCheckSecurityDescriptorControl(filePath, SecurityDescriptor);
+  MirrorCheckSecurityDescriptorDacl(filePath, SecurityDescriptor);
+
+  LPTSTR StringSecurityDescriptor = NULL;
+  ULONG StringSecurityDescriptorLen;
+  BOOL convertResult = ConvertSecurityDescriptorToStringSecurityDescriptor(
+      SecurityDescriptor, SDDL_REVISION_1, *SecurityInformation,
+      &StringSecurityDescriptor, &StringSecurityDescriptorLen);
+  if (convertResult) {
+    DbgPrint(L"ConvertSecurityDescriptorToStringSecurityDescriptor success on "
+             L"SetFileSecurity %s\n",
+             filePath);
+    DbgPrint(L"Converted StringSecurityDescriptor %s\n",
+             StringSecurityDescriptor);
+  } else {
+    DbgPrint(L"ConvertSecurityDescriptorToStringSecurityDescriptor failed on "
+             L"SetFileSecurity %s\n",
+             filePath);
   }
+
+  ACL_SIZE_INFORMATION aclSizeInfo;
+  BOOL bDaclExist;
+  BOOL bDaclPresent;
+  DWORD dwNewAclSize;
+  PACL pacl;
+  PACL pNewAcl = NULL;
+  PSECURITY_DESCRIPTOR psd = NULL;
+  PSECURITY_DESCRIPTOR newAbsoluteSecurityDesciptor = NULL;
+  PSECURITY_DESCRIPTOR newSelfRelativeSecurityDesciptor = NULL;
+  DWORD dwSidSize = 0;
+  DWORD dwSdSizeNeeded;
+  PACL pInputASDDacl = NULL;
+  PACL pInputASDDSacl = NULL;
+  PSID pInputASDOwner = NULL;
+  PSID pInputASDPrimaryGroup = NULL;
+
+  __try {
+    // Obtain the security descriptor for the desktop object.
+
+    if (!GetUserObjectSecurity(handle, SecurityInformation, psd, dwSidSize,
+                               &dwSdSizeNeeded)) {
+      if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+        psd = (PSECURITY_DESCRIPTOR)HeapAlloc(GetProcessHeap(),
+                                              HEAP_ZERO_MEMORY, dwSdSizeNeeded);
+
+        if (psd == NULL) {
+          DbgPrint(
+              L"GetUserObjectSecurity failed on SetFileSecurity %s, psd == "
+              L"NULL\n",
+              filePath);
+          __leave;
+        }
+
+        dwSidSize = dwSdSizeNeeded;
+
+        if (!GetUserObjectSecurity(handle, SecurityInformation, psd, dwSidSize,
+                                   &dwSdSizeNeeded)) {
+          DbgPrint(L"GetUserObjectSecurity failed on SetFileSecurity %s, retry "
+                   L"GetUserObjectSecurity failed!\n",
+                   filePath);
+          __leave;
+        }
+      } else {
+        DbgPrint(L"GetUserObjectSecurity failed on SetFileSecurity %s, "
+                 L"GetLastError() == ERROR_INSUFFICIENT_BUFFER is false.\n",
+                 filePath);
+        __leave;
+      }
+    }
+
+    DbgPrint(L"GetUserObjectSecurity succeed on SetFileSecurity %s\n",
+             filePath);
+
+    if (psd == NULL) {
+      DbgPrint(L"GetUserObjectSecurity failed on SetFileSecurity %s, psd == "
+               L"NULL\n",
+               filePath);
+      __leave;
+    }
+    // Obtain the DACL from the security descriptor.
+
+    if (!GetSecurityDescriptorDacl(psd, &bDaclPresent, &pacl, &bDaclExist)) {
+      DbgPrint(L"GetSecurityDescriptorDacl failed on SetFileSecurity %s\n",
+               filePath);
+      __leave;
+    }
+
+    // Initialize.
+
+    ZeroMemory(&aclSizeInfo, sizeof(ACL_SIZE_INFORMATION));
+    aclSizeInfo.AclBytesInUse = sizeof(ACL);
+
+    // Call only if NULL DACL.
+
+    if (pacl != NULL) {
+      // Determine the size of the ACL information.
+
+      DbgPrint(L"pacl != NULL on SetFileSecurity %s\n", filePath);
+
+      if (!GetAclInformation(pacl, (LPVOID)&aclSizeInfo,
+                             sizeof(ACL_SIZE_INFORMATION),
+                             AclSizeInformation)) {
+        DbgPrint(L"GetAclInformation failed on SetFileSecurity %s\n", filePath);
+        __leave;
+      }
+    } else {
+      DbgPrint(L"pacl == NULL on SetFileSecurity %s\n", filePath);
+    }
+
+    ACL_SIZE_INFORMATION inputAclSizeInfo;
+    BOOL bInputDaclExist;
+    BOOL bInputDaclPresent;
+    PACL pInputacl;
+
+    // Obtain the DACL from the input security descriptor.
+
+    if (!GetSecurityDescriptorDacl(SecurityDescriptor, &bInputDaclPresent,
+                                   &pInputacl, &bInputDaclExist)) {
+      DbgPrint(
+          L"GetSecurityDescriptorDacl for input failed on SetFileSecurity %s\n",
+          filePath);
+      __leave;
+    }
+
+    // Initialize.
+
+    ZeroMemory(&inputAclSizeInfo, sizeof(ACL_SIZE_INFORMATION));
+    inputAclSizeInfo.AclBytesInUse = sizeof(ACL);
+
+    // Call only if NOT NULL input DACL.
+
+    if (pInputacl != NULL) {
+      // Determine the size of the ACL information.
+      DbgPrint(L"pInputacl != NULL on SetFileSecurity %s\n", filePath);
+      if (!GetAclInformation(pInputacl, (LPVOID)&inputAclSizeInfo,
+                             sizeof(ACL_SIZE_INFORMATION),
+                             AclSizeInformation)) {
+        DbgPrint(L"GetAclInformation for input failed on SetFileSecurity %s\n",
+                 filePath);
+        __leave;
+      }
+    } else {
+      DbgPrint(L"pInputacl == NULL on SetFileSecurity %s\n", filePath);
+    }
+
+    // Compute the size of the new ACL.
+
+    dwNewAclSize = aclSizeInfo.AclBytesInUse + inputAclSizeInfo.AclBytesInUse;
+    DbgPrint(L"dwNewAclSize = %d on SetFileSecurity %s\n", dwNewAclSize,
+             filePath);
+
+    // Allocate buffer for the new ACL.
+
+    pNewAcl = (PACL)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwNewAclSize);
+
+    if (pNewAcl == NULL) {
+      DbgPrint(L"pNewAcl == NULL on SetFileSecurity %s\n", filePath);
+      __leave;
+    } else {
+      DbgPrint(L"pNewAcl != NULL on SetFileSecurity %s\n", filePath);
+    }
+
+    // Initialize the new ACL.
+
+    if (!InitializeAcl(pNewAcl, dwNewAclSize, ACL_REVISION)) {
+      DbgPrint(L"InitializeAcl for pNewAcl failed on SetFileSecurity %s\n",
+               filePath);
+      __leave;
+    }
+
+    MirrorPrivateMergeDaclInCanonicalOrder(
+        filePath, bDaclPresent, pacl, bInputDaclPresent, pInputacl, pNewAcl);
+
+    // check IsValidAcl for pNewAcl
+
+    if (!IsValidAcl(pNewAcl)) {
+      DbgPrint(L"IsValidAcl is false on SetFileSecurity %s\n", filePath);
+    } else {
+      DbgPrint(L"IsValidAcl is true on SetFileSecurity %s\n", filePath);
+    }
+
+    // check IsValidSecurityDescriptor for original SecurityDescriptor
+    if (!IsValidSecurityDescriptor(SecurityDescriptor)) {
+      DbgPrint(L"IsValidSecurityDescriptor for input SecurityDescriptor is "
+               L"false on SetFileSecurity %s\n",
+               filePath);
+    } else {
+      DbgPrint(L"IsValidSecurityDescriptor for input SecurityDescriptor is "
+               L"true on SetFileSecurity %s\n",
+               filePath);
+    }
+
+    DWORD newAbsoluteSecurityDesciptorSize = 0;
+    DWORD inputASDDaclSize = 0;
+    DWORD inputASDDSaclSize = 0;
+    DWORD inputASDOwnerSize = 0;
+    DWORD inputASDPrimaryGroupSize = 0;
+
+    if (!MakeAbsoluteSD(SecurityDescriptor, newAbsoluteSecurityDesciptor,
+                        &newAbsoluteSecurityDesciptorSize, pInputASDDacl,
+                        &inputASDDaclSize, pInputASDDSacl, &inputASDDSaclSize,
+                        pInputASDOwner, &inputASDOwnerSize,
+                        pInputASDPrimaryGroup, &inputASDPrimaryGroupSize)) {
+      if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+        newAbsoluteSecurityDesciptor =
+            (PSECURITY_DESCRIPTOR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                            newAbsoluteSecurityDesciptorSize);
+
+        if (newAbsoluteSecurityDesciptor == NULL) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                   L"newAbsoluteSecurityDesciptor == "
+                   L"NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        pInputASDDacl = (PACL)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                        inputASDDaclSize);
+
+        if (pInputASDDacl == NULL) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                   L"pInputASDDacl == NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        pInputASDDSacl = (PACL)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                         inputASDDSaclSize);
+
+        if (pInputASDDSacl == NULL) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                   L"pinputASDDSacl == NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        pInputASDOwner = (PSID)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                         inputASDOwnerSize);
+
+        if (pInputASDOwner == NULL) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                   L"pInputASDOwner == NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        pInputASDPrimaryGroup = (PSID)HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY, inputASDPrimaryGroupSize);
+
+        if (pInputASDPrimaryGroup == NULL) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                   L"pInputASDPrimaryGroup == NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        if (!MakeAbsoluteSD(SecurityDescriptor, newAbsoluteSecurityDesciptor,
+                            &newAbsoluteSecurityDesciptorSize, pInputASDDacl,
+                            &inputASDDaclSize, pInputASDDSacl,
+                            &inputASDDSaclSize, pInputASDOwner,
+                            &inputASDOwnerSize, pInputASDPrimaryGroup,
+                            &inputASDPrimaryGroupSize)) {
+          DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, retry "
+                   L"MakeAbsoluteSD failed!\n",
+                   filePath);
+          __leave;
+        } else {
+          DbgPrint(L"MakeAbsoluteSD succeed on retry for "
+                   L"newAbsoluteSecurityDesciptor "
+                   L"on SetFileSecurity %s\n",
+                   filePath);
+        }
+      } else {
+        DbgPrint(L"MakeAbsoluteSD failed on SetFileSecurity %s, "
+                 L"GetLastError() == ERROR_INSUFFICIENT_BUFFER is false.\n",
+                 filePath);
+        __leave;
+      }
+    } else {
+      DbgPrint(L"MakeAbsoluteSD succeed for newAbsoluteSecurityDesciptor on "
+               L"SetFileSecurity %s\n",
+               filePath);
+    }
+
+    // Set new DACL to the new security descriptor.
+
+    if (!SetSecurityDescriptorDacl(newAbsoluteSecurityDesciptor, TRUE, pNewAcl,
+                                   FALSE)) {
+      int error = GetLastError();
+      DbgPrint(
+          L"SetSecurityDescriptorDacl for pacl to newAbsoluteSecurityDesciptor "
+          L"failed on SetFileSecurity %s, lastError = %d\n",
+          filePath, error);
+      __leave;
+    } else {
+      DbgPrint(
+          L"SetSecurityDescriptorDacl for pacl to newAbsoluteSecurityDesciptor "
+          L"succeed on SetFileSecurity %s\n",
+          filePath);
+    }
+
+    DWORD newSelfRelativeSecurityDesciptorSize = 0;
+    if (!MakeSelfRelativeSD(newAbsoluteSecurityDesciptor,
+                            newSelfRelativeSecurityDesciptor,
+                            &newSelfRelativeSecurityDesciptorSize)) {
+      if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+        newSelfRelativeSecurityDesciptor = (PSECURITY_DESCRIPTOR)HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY,
+            newSelfRelativeSecurityDesciptorSize);
+
+        if (newSelfRelativeSecurityDesciptor == NULL) {
+          DbgPrint(L"MakeSelfRelativeSD failed on SetFileSecurity %s, "
+                   L"newSelfRelativeSecurityDesciptor == "
+                   L"NULL\n",
+                   filePath);
+          __leave;
+        }
+
+        if (!MakeSelfRelativeSD(newAbsoluteSecurityDesciptor,
+                                newSelfRelativeSecurityDesciptor,
+                                &newSelfRelativeSecurityDesciptorSize)) {
+          DbgPrint(L"MakeSelfRelativeSD failed on SetFileSecurity %s, retry "
+                   L"MakeSelfRelativeSD failed!\n",
+                   filePath);
+          __leave;
+        } else {
+          DbgPrint(L"MakeSelfRelativeSD succeed on retry for "
+                   L"newSelfRelativeSecurityDesciptor "
+                   L"on SetFileSecurity %s\n",
+                   filePath);
+        }
+      } else {
+        DbgPrint(L"MakeSelfRelativeSD failed on SetFileSecurity %s, "
+                 L"GetLastError() == ERROR_INSUFFICIENT_BUFFER is false.\n",
+                 filePath);
+        __leave;
+      }
+    } else {
+      DbgPrint(
+          L"MakeSelfRelativeSD succeed for newSelfRelativeSecurityDesciptor on "
+          L"SetFileSecurity %s\n",
+          filePath);
+    }
+
+    if (!SetUserObjectSecurity(handle, SecurityInformation,
+                               newSelfRelativeSecurityDesciptor)) {
+      int error = GetLastError();
+      DbgPrint(L"  SetUserObjectSecurity error: %d\n", error);
+      return DokanNtStatusFromWin32(error);
+    }
+
+  } __finally {
+    // Free buffers.
+
+    if (pNewAcl != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)pNewAcl);
+
+    if (psd != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)psd);
+
+    if (newAbsoluteSecurityDesciptor != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)newAbsoluteSecurityDesciptor);
+
+    if (pInputASDDacl != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)pInputASDDacl);
+
+    if (pInputASDDSacl != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)pInputASDDSacl);
+
+    if (pInputASDOwner != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)pInputASDOwner);
+
+    if (pInputASDPrimaryGroup != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)pInputASDPrimaryGroup);
+
+    if (newSelfRelativeSecurityDesciptor != NULL)
+      HeapFree(GetProcessHeap(), 0, (LPVOID)newSelfRelativeSecurityDesciptor);
+  }
+
   return STATUS_SUCCESS;
 }
 
